@@ -1,0 +1,15 @@
+streamlit
+llama-index
+llama-index-embeddings-huggingface
+llama-index-vector-stores-faiss
+faiss-cpu
+transformers==4.44.2
+sentence-transformers==3.1.1
+PyPDF2
+streamlit-pdf-viewer
+reportlab
+requests
+openai
+anthropic
+torch==2.3.0
+torchvision==0.18.0
