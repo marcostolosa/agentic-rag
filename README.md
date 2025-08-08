@@ -1,29 +1,21 @@
-# Agentic ROG 🚀
+# Agentic RAG 🚀
 
 [![Streamlit App](https://img.shields.io/badge/Streamlit-1.32.0-brightgreen)](https://streamlit.io/) [![Python Version](https://img.shields.io/badge/Python-3.8%2B-blue)](https://www.python.org/) [![License](https://img.shields.io/badge/License-MIT-red)](LICENSE)
 [![Documentation](https://img.shields.io/badge/Documentation-Yes-green)](#como-usar) [![Made With](https://img.shields.io/badge/Made%20with-❤-e03997)](https://github.com/)
 
 ---
 
-Agentic-RAG é uma aplicação web desenvolvida com Streamlit para auxiliar em atividades de pentest (teste de penetração), permitindo o upload e indexação de documentos, busca de informações e geração de relatórios em PDF. A aplicação utiliza embeddings de texto para buscar informações em documentos locais e integra um `assistente OpenAI` para responder perguntas relacionadas ao pentest.
+## 📖 Visão Geral
+
+Agentic-RAG é uma aplicação web desenvolvida com Streamlit para auxiliar em atividades de pentest (teste de penetração), permitindo o upload e indexação de documentos, busca de informações e geração de relatórios em PDF. A aplicação utiliza embeddings de texto para buscar informações em documentos locais e integra um `assistente OpenAI` para responder perguntas relacionadas.
 
 ## Funcionalidades
-
-- **Upload de Documentos:** Suporte para arquivos `.pdf`, `.txt` e `.md`.
-- **Indexação de Documentos:** Usa embeddings gerados pelo modelo `sentence-transformers/all-MiniLM-L6-v2` e FAISS para busca eficiente.
-- **Assistente de Pentest:** Integração com a API da OpenAI para responder perguntas com base nos documentos indexados e fornecer sugestões de comandos.
-- **Fases do Pentest:** Suporte para as fases de Reconhecimento, Enumeração, Exploração e Relatório.
+- 📄 **Upload de Documentos:** Suporte para arquivos `.pdf`, `.txt` e `.md`.
+- 🕵️ **Indexação de Documentos:** Usa embeddings gerados pelo modelo `sentence-transformers/all-MiniLM-L6-v2` e FAISS para busca eficiente.
+- 💬 **Assistente de Pentest:** Integração com a API da OpenAI para responder perguntas com base nos documentos indexados e fornecer sugestões de comandos.
+- 🔍 **Fases do Pentest:** Suporte para as fases de Reconhecimento, Enumeração, Exploração e Relatório.
 - **Histórico de Conversas:** Exibe perguntas e respostas em cards expansíveis.
-- **Exportação de Relatório:** Gera um relatório em PDF com o histórico de conversas.
-- **Interface Intuitiva:** Tema escuro com verde hacker, fonte "Consolas", sidebar colapsável e botões interativos.
-
-## 📖 Visão Geral
-O Agentic ROG é uma ferramenta de análise de documentos para profissionais de segurança da informação. Utiliza **IA generativa** e **processamento de linguagem natural** para:
-
-- 🕵️♂️ Responder perguntas técnicas com base em documentos carregados
-- 📄 Indexar automaticamente arquivos `Markdown`, `PDF`, `TXT` e outros formatos
-- 🔍 Rastrear fontes das respostas (ex: "70% da resposta veio do relatório.pdf")
-- 💬 Manter histórico de conversas com formatação Markdown
+- **Exportação de Relatório:** Gera um relatório em PDF com o histórico de conversas incluso.
 
 ---
 

@@ -20,10 +20,13 @@ from openai import OpenAI
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from io import BytesIO
+from pentest_tools import run_nmap_scan, run_nikto_scan, run_gobuster_scan, run_searchsploit
 import torch
 import pdfplumber
 import logging
 import json
+from typing import List, Dict
+import pentest_tools
 
 # Configuração do Logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -316,6 +319,29 @@ def search_cve(cve_id: str) -> str:
         return json.dumps(response.json())
     except Exception as e:
         return f"Erro ao buscar CVE {cve_id}: {str(e)}"
+    
+def search_exploitdb(cve_id: str) -> str:
+    """Busca exploits relacionados a um CVE no Exploit-DB via searchsploit."""
+    logger.info(f"Buscando Exploit-DB para {cve_id}")
+    try:
+        file_path = run_searchsploit(cve_id)
+        with open(file_path, "r") as f:
+            data = f.read()
+        return data or f"Nenhum exploit encontrado para {cve_id}."
+    except Exception as e:
+        logger.error(f"Erro ao buscar Exploit-DB {cve_id}: {e}")
+        return f"Erro ao buscar Exploit-DB {cve_id}: {e}"
+    
+def update_tasks(tasks: List[Dict]) -> Dict:
+    """
+    Atualiza as tarefas pendentes e concluídas no contexto do pentest.
+    Recebe uma lista de objetos com 'id', 'description' e 'status'.
+    """
+    logger.info(f"Atualizando tarefas: {tasks}")
+    # Atualiza listas no contexto
+    context.pending_tasks = [t for t in tasks if t.get('status') == 'pending']
+    context.completed_tasks = [t for t in tasks if t.get('status') == 'completed']
+    return {"message": f"Tarefas atualizadas: {len(context.pending_tasks)} pendentes, {len(context.completed_tasks)} concluídas."}
 
 def create_assistant():
     """Cria um assistente OpenAI para pentest."""
@@ -333,6 +359,8 @@ def create_assistant():
             A fase atual do pentest é: {context.phase}.
             O alvo atual é: {context.target or 'Não definido'}.
             Sempre que responder usando informações de documentos, inclua as fontes no formato: (Fontes: [fontes aqui]).
+            
+            Quando identificar próximos passos de enumeração ou exploração, atualize a lista de tarefas pendentes/completas chamando a função update_tasks(tasks) com um array de objetos contendo 'id', 'description' e 'status' ('pending' ou 'completed').
             """,
             model="gpt-4",
             tools=[
@@ -363,8 +391,50 @@ def create_assistant():
                             "required": ["cve_id"]
                         }
                     }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "search_exploitdb",
+                        "description": "Busca exploits no Exploit-DB relacionados a um CVE.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "cve_id": {"type": "string", "description": "O ID da CVE (ex: CVE-2021-1234)"}
+                            },
+                            "required": ["cve_id"]
+                        }
+                    }
                 }
             ]
+            + [  # Adiciona ferramenta para atualizar tarefas
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "update_tasks",
+                        "description": "Atualiza a lista de tarefas pendentes e concluídas.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "tasks": {
+                                    "type": "array",
+                                    "description": "Lista de tarefas",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {"type": "integer"},
+                                            "description": {"type": "string"},
+                                            "status": {"type": "string", "enum": ["pending", "completed"]}
+                                        },
+                                        "required": ["id", "description", "status"]
+                                    }
+                                }
+                            },
+                            "required": ["tasks"]
+                        }
+                    }
+                }
+              ],
         )
         logger.info("Assistente criado com sucesso")
         return assistant
@@ -404,6 +474,13 @@ def process_message(assistant, thread, question):
                 elif function_name == "search_cve":
                     output = search_cve(arguments["cve_id"])
                     sources = "NVD API"
+                elif function_name == "search_exploitdb":
+                    output = search_exploitdb(arguments.get("cve_id", ""))
+                    sources = "Exploit-DB"
+                elif function_name == "update_tasks":
+                    result = update_tasks(arguments.get("tasks", []))
+                    output = result.get("message", "Tarefas atualizadas.")
+                    sources = "Gerenciador de Tarefas"
                 else:
                     output = f"Função {function_name} não reconhecida."
                     sources = "Nenhuma fonte disponível"
@@ -446,16 +523,6 @@ def list_document_files():
             })
     return file_list
 
-def suggest_commands(context):
-    """Sugere comandos com base na fase do pentest."""
-    if context.phase == "Reconhecimento":
-        return f"Use 'nmap -sV {context.target}' para escanear serviços no alvo."
-    elif context.phase == "Enumeração":
-        return f"Tente 'enum4linux -a {context.target}' para enumeração SMB."
-    elif context.phase == "Exploração":
-        return f"Use 'msfconsole' para explorar vulnerabilidades no {context.target}."
-    return "Documente suas descobertas no relatório."
-
 def export_report(history):
     """Exporta o histórico de conversas como um relatório em PDF."""
     buffer = BytesIO()
@@ -491,207 +558,168 @@ def export_report(history):
 
 # Interface Principal
 def main():
-    # Estilo CSS
+    # Estilo CSS "Grok Style"
     st.markdown("""
     <style>
+        /* Estilo Geral */
         .stApp {
-            background-color: #0D1117;
-            color: #C9D1D9;
+            background-color: #121212;
+            color: #E0E0E0;
             font-family: 'Consolas', monospace;
             margin: 0;
             padding: 0;
         }
 
-        /* Barra de Input Fixa no Topo */
-        .input-container {
+        /* Barra de Navegação Superior Fixa */
+        .navbar {
             position: fixed;
             top: 0;
             left: 0;
             right: 0;
-            background-color: #161B22;
-            padding: 10px 15px;
+            background: linear-gradient(to bottom, #1E1E1E, #121212);
+            padding: 10px 20px;
             z-index: 1000;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            border-bottom: 1px solid #00FF88;
+            box-shadow: 0 0 10px rgba(0, 255, 136, 0.2);
+        }
+
+        .navbar-title {
+            font-size: 18px;
+            font-weight: bold;
+            color: #00FF88;
+            margin: 0;
+        }
+
+        .navbar .stButton > button {
+            background: none;
+            border: none;
+            color: #00FF88;
+            font-size: 20px;
+            padding: 5px;
+            transition: transform 0.2s ease;
+        }
+
+        .navbar .stButton > button:hover {
+            transform: scale(1.1);
+            filter: drop-shadow(0 0 5px #00FF88);
+        }
+
+        .navbar .stTextInput > div > input {
+            background-color: #2A2A2A;
+            border: 1px solid #00FF88;
+            border-radius: 5px;
+            padding: 8px 12px;
+            color: #E0E0E0;
+            font-size: 14px;
+            outline: none;
+            width: 100%;
+            transition: border-color 0.2s ease;
+        }
+
+        .navbar .stTextInput > div > input::placeholder {
+            color: #8B949E;
+        }
+
+        .navbar .stTextInput > div > input:focus {
+            border-color: #00FF88;
+            box-shadow: 0 0 5px rgba(0, 255, 136, 0.3);
+        }
+
+        .navbar .stButton > button.submit-btn {
+            background: linear-gradient(to right, #00FF88, #00CC66);
+            border: none;
+            border-radius: 5px;
+            padding: 8px 15px;
+            color: #121212;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .navbar .stButton > button.submit-btn:hover {
+            background: linear-gradient(to right, #00CC66, #00FF88);
+            box-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+        }
+
+        /* Sidebar */
+        .stSidebar {
+            background-color: #1E1E1E;
+            padding: 20px;
+            width: 300px !important;
+            border-right: 1px solid #00FF88;
+        }
+
+        .sidebar-content h2 {
+            font-size: 20px;
+            font-weight: bold;
+            color: #00FF88;
+            margin-bottom: 20px;
             display: flex;
             align-items: center;
             gap: 10px;
         }
 
-        .input-container .stTextInput > div > input {
-            background-color: #21262D;
-            border: 1px solid #30363D;
-            border-radius: 5px;
-            padding: 8px 12px;
-            color: #C9D1D9;
-            font-size: 14px;
-            outline: none;
-            width: 100%;
-        }
-
-        .input-container .stTextInput > div > input::placeholder {
-            color: #8B949E;
-        }
-
-        .input-container .stButton > button {
-            background-color: #00CC00;
-            border: none;
-            border-radius: 5px;
-            padding: 8px 15px;
-            color: #0D1117;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: background-color 0.2s ease;
-        }
-
-        .input-container .stButton > button:hover {
-            background-color: #00B300;
-        }
-
-        .toggle-button {
-            background: none;
-            border: none;
-            color: #00CC00;
-            font-size: 20px;
-            cursor: pointer;
-        }
-
-        /* Área de Conteúdo */
-        .content-container {
-            margin-top: 70px;
-            padding: 20px;
-            max-width: 900px;
-            margin-left: auto;
-            margin-right: auto;
-        }
-
-        /* Estilo dos Cards de Conversa */
-        .chat-card {
-            background-color: #161B22;
-            border-radius: 8px;
-            margin-bottom: 15px;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
-        }
-
-        .chat-header {
-            background-color: #21262D;
-            padding: 10px 15px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .chat-header h3 {
-            margin: 0;
-            font-size: 14px;
-            font-weight: 500;
-            color: #C9D1D9;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .chat-header h3 .icon {
-            color: #00CC00;
-            font-size: 16px;
-        }
-
-        .chat-header .stButton > button {
-            background: none;
-            border: none;
-            color: #8B949E;
-            font-size: 14px;
-            padding: 5px;
-        }
-
-        .chat-content {
-            padding: 15px;
-            background-color: #161B22;
-        }
-
-        .chat-message {
-            margin-bottom: 10px;
-        }
-
-        .chat-message strong {
-            color: #00CC00;
-        }
-
-        .chat-message p {
-            margin: 5px 0;
-            line-height: 1.5;
-            font-size: 13px;
-        }
-
-        /* Estilo da Sidebar */
-        .stSidebar {
-            background-color: #0D1117;
-            padding: 15px;
-            width: 280px !important;
-        }
-
-        .sidebar-content h2 {
-            font-size: 18px;
-            font-weight: 600;
-            color: #C9D1D9;
-            margin-bottom: 15px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .sidebar-content h2 .icon {
-            color: #00CC00;
-            font-size: 20px;
-        }
-
         .sidebar-content .stSelectbox > div,
         .sidebar-content .stTextInput > div > input,
         .sidebar-content .stSlider > div {
-            background-color: #21262D;
-            border: 1px solid #30363D;
+            background-color: #2A2A2A;
+            border: 1px solid #00FF88;
             border-radius: 5px;
             padding: 8px;
-            color: #C9D1D9;
-            font-size: 13px;
+            color: #E0E0E0;
+            font-size: 14px;
+            margin-bottom: 15px;
+        }
+
+        .sidebar-content .stFileUploader > div {
+            background-color: #2A2A2A;
+            border: 1px solid #00FF88;
+            border-radius: 5px;
+            padding: 8px;
+            color: #E0E0E0;
+            font-size: 14px;
             margin-bottom: 15px;
         }
 
         .sidebar-content .stButton > button {
-            background-color: #00CC00;
+            background: linear-gradient(to right, #00FF88, #00CC66);
             border: none;
             border-radius: 5px;
             padding: 10px;
-            color: #0D1117;
-            font-size: 13px;
+            color: #121212;
+            font-size: 14px;
             font-weight: 600;
             cursor: pointer;
             width: 100%;
             margin-bottom: 10px;
-            transition: background-color 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            justify-content: center;
+            transition: all 0.2s ease;
         }
 
         .sidebar-content .stButton > button:hover {
-            background-color: #00B300;
+            background: linear-gradient(to right, #00CC66, #00FF88);
+            box-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
         }
 
         .sidebar-content .file-list {
-            margin-top: 15px;
+            margin-top: 20px;
         }
 
         .sidebar-content .file-list h3 {
-            font-size: 14px;
-            font-weight: 500;
-            color: #C9D1D9;
+            font-size: 16px;
+            font-weight: bold;
+            color: #00FF88;
             margin-bottom: 10px;
             display: flex;
             align-items: center;
             gap: 8px;
-        }
-
-        .sidebar-content .file-list h3 .icon {
-            color: #00CC00;
-            font-size: 16px;
         }
 
         .sidebar-content .file-list ul {
@@ -701,27 +729,110 @@ def main():
         }
 
         .sidebar-content .file-list li {
-            background-color: #21262D;
+            background-color: #2A2A2A;
             border-radius: 5px;
             padding: 8px;
             margin-bottom: 5px;
             font-size: 12px;
-            color: #C9D1D9;
+            color: #E0E0E0;
+        }
+
+        /* Área de Conteúdo */
+        .content-container {
+            margin-top: 70px;
+            padding: 20px;
+            max-width: 1000px;
+            margin-left: auto;
+            margin-right: auto;
+            overflow-y: auto;
+        }
+
+        .status-bar {
+            background-color: #2A2A2A;
+            border-radius: 5px;
+            padding: 10px;
+            margin-bottom: 20px;
+            font-size: 12px;
+            color: #E0E0E0;
+        }
+
+        .status-bar strong {
+            color: #00FF88;
+        }
+
+        /* Cards de Conversa */
+        .chat-card {
+            background-color: #2A2A2A;
+            border-radius: 10px;
+            margin-bottom: 15px;
+            padding: 10px;
+            border-left: 4px solid #00FF88;
+            transition: all 0.2s ease;
+        }
+
+        .chat-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 5px 10px;
+        }
+
+        .chat-header h3 {
+            font-size: 14px;
+            font-weight: bold;
+            color: #00FF88;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .chat-header .stButton > button {
+            background: none;
+            border: none;
+            color: #E0E0E0;
+            font-size: 14px;
+            padding: 5px;
+            transition: color 0.2s ease;
+        }
+
+        .chat-header .stButton > button:hover {
+            color: #00FF88;
+            filter: drop-shadow(0 0 5px #00FF88);
+        }
+
+        .chat-content {
+            padding: 10px;
+            border-top: 1px solid #424242;
+        }
+
+        .chat-message {
+            margin-bottom: 10px;
+        }
+
+        .chat-message strong {
+            color: #00FF88;
+        }
+
+        .chat-message p {
+            margin: 5px 0;
+            line-height: 1.5;
+            font-size: 13px;
+            color: #E0E0E0;
         }
 
         /* Sugestões */
         .suggestion {
-            margin-top: 20px;
-            padding: 15px;
-            background-color: #21262D;
+            background-color: #2A2A2A;
             border-radius: 5px;
+            padding: 15px;
             font-size: 13px;
-            color: #C9D1D9;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+            color: #E0E0E0;
+            border-left: 4px solid #00FF88;
         }
 
         .suggestion strong {
-            color: #00CC00;
+            color: #00FF88;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -783,6 +894,35 @@ def main():
                 save_uploaded_files(uploaded_files)
                 st.session_state.index = create_or_load_index()
 
+        # Scans automatizados via ferramentas de pentest
+        st.markdown("## Scans Automatizados")
+        scan_type = st.selectbox(
+            label="Tipo de Scan",
+            options=["Nmap", "Nikto", "Gobuster"],
+            key="scan_type",
+            label_visibility="collapsed"
+        )
+        scan_target = st.text_input(
+            label="Alvo para Scan",
+            placeholder="Ex: http://example.com ou 192.168.1.1",
+            key="scan_target",
+            label_visibility="collapsed"
+        )
+        if st.button(label="Executar Scan", key="execute_scan"):
+            with st.spinner(f"Executando {scan_type} em {scan_target}..."):
+                try:
+                    if scan_type == "Nmap":
+                        scan_file = run_nmap_scan(scan_target)
+                    elif scan_type == "Nikto":
+                        scan_file = run_nikto_scan(scan_target)
+                    else:
+                        scan_file = run_gobuster_scan(scan_target)
+                    st.success(f"Scan salvo em {scan_file}")
+                    # Reindexar documentos após novo scan
+                    st.session_state.index = create_or_load_index()
+                except Exception as e:
+                    st.error(f"Erro ao executar scan: {e}")
+
         if st.button(
             label=f"{icons['clear']} Limpar Histórico",
             help="Limpar o histórico de conversas",
@@ -817,12 +957,27 @@ def main():
             st.markdown(f'<h3><span class="icon">{icons["files"]}</span> Arquivos Indexados</h3>', unsafe_allow_html=True)
             st.markdown('<p style="color: #8B949E; font-size: 12px;">Nenhum arquivo encontrado.</p>', unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
+        # Lista de Tarefas
+        st.markdown('<div class="task-list">', unsafe_allow_html=True)
+        st.markdown('<h3><span class="icon">⚡</span> Tarefas Pendentes</h3>', unsafe_allow_html=True)
+        if context.pending_tasks:
+            for t in context.pending_tasks:
+                st.markdown(f'- [{t.get("id")}] {t.get("description")}', unsafe_allow_html=True)
+        else:
+            st.markdown('<p style="color: #8B949E; font-size: 12px;">Nenhuma tarefa pendente.</p>', unsafe_allow_html=True)
+        st.markdown('<h3><span class="icon">✅</span> Tarefas Concluídas</h3>', unsafe_allow_html=True)
+        if context.completed_tasks:
+            for t in context.completed_tasks:
+                st.markdown(f'- [{t.get("id")}] {t.get("description")}', unsafe_allow_html=True)
+        else:
+            st.markdown('<p style="color: #8B949E; font-size: 12px;">Nenhuma tarefa concluída.</p>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # Barra de Input Fixa no Topo
+    # Barra de Navegação Superior Fixa
     with st.container():
-        st.markdown('<div class="input-container">', unsafe_allow_html=True)
+        st.markdown('<div class="navbar">', unsafe_allow_html=True)
         
         st.button(
             label=f"{icons['menu']}",
@@ -831,59 +986,63 @@ def main():
             on_click=lambda: setattr(st.session_state, "sidebar_open", not st.session_state.sidebar_open)
         )
 
-        question = sanitize_input(
-            st.text_input(
-                label="Digite sua pergunta",
-                placeholder="Digite sua pergunta (ex.: Quais vulnerabilidades afetam meu alvo?)",
-                key="question_input",
-                label_visibility="collapsed"
+        st.markdown('<h1 class="navbar-title">Agentic-RAG</h1>', unsafe_allow_html=True)
+
+        col1, col2 = st.columns([5, 1])
+        with col1:
+            question = sanitize_input(
+                st.text_input(
+                    label="Digite sua pergunta",
+                    placeholder="Digite sua pergunta (ex.: Quais vulnerabilidades afetam meu alvo?)",
+                    key="question_input",
+                    label_visibility="collapsed"
+                )
             )
-        )
-        
-        if st.button(
-            label=f"{icons['send']} Enviar",
-            help="Enviar a pergunta",
-            key="send_button"
-        ):
-            if not question:
-                st.warning("Digite uma pergunta válida!")
-            else:
-                with st.spinner("Processando sua pergunta..."):
-                    try:
-                        if st.session_state.assistant is None or st.session_state.thread is None:
-                            raise ValueError("O assistente não foi inicializado. Tente limpar o histórico ou reiniciar o aplicativo.")
-                        client.beta.assistants.update(
-                            assistant_id=st.session_state.assistant.id,
-                            instructions=f"""
-                            Você é um especialista em pentest seguindo o workflow:
-                            1. Reconhecimento
-                            2. Enumeração
-                            3. Exploração
-                            4. Relatório
-                            Acompanhe o usuário em todas as fases, fornecendo insights, dicas de especialistas e comandos úteis.
-                            Use as ferramentas disponíveis para buscar informações nos documentos locais e responder às perguntas.
-                            A fase atual do pentest é: {context.phase}.
-                            O alvo atual é: {context.target or 'Não definido'}.
-                            Sempre que responder usando informações de documentos, inclua as fontes no formato: (Fontes: [fontes aqui]).
-                            """
-                        )
-                        response_text = process_message(st.session_state.assistant, st.session_state.thread, question)
-                        logger.info("Resposta gerada com sucesso")
+        with col2:
+            if st.button(
+                label=f"{icons['send']} Enviar",
+                help="Enviar a pergunta",
+                key="send_button"
+            ):
+                if not question:
+                    st.warning("Digite uma pergunta válida!")
+                else:
+                    with st.spinner("Processando sua pergunta..."):
+                        try:
+                            if st.session_state.assistant is None or st.session_state.thread is None:
+                                raise ValueError("O assistente não foi inicializado. Tente limpar o histórico ou reiniciar o aplicativo.")
+                            client.beta.assistants.update(
+                                assistant_id=st.session_state.assistant.id,
+                                instructions=f"""
+                                Você é um especialista em pentest seguindo o workflow:
+                                1. Reconhecimento
+                                2. Enumeração
+                                3. Exploração
+                                4. Relatório
+                                Acompanhe o usuário em todas as fases, fornecendo insights, dicas de especialistas e comandos úteis.
+                                Use as ferramentas disponíveis para buscar informações nos documentos locais e responder às perguntas.
+                                A fase atual do pentest é: {context.phase}.
+                                O alvo atual é: {context.target or 'Não definido'}.
+                                Sempre que responder usando informações de documentos, inclua as fontes no formato: (Fontes: [fontes aqui]).
+                                """
+                            )
+                            response_text = process_message(st.session_state.assistant, st.session_state.thread, question)
+                            logger.info("Resposta gerada com sucesso")
 
-                        context.report.append(response_text)
+                            context.report.append(response_text)
 
-                        if "conversation_history" not in st.session_state:
-                            st.session_state.conversation_history = []
-                        st.session_state.conversation_history.append({
-                            "question": question,
-                            "response": response_text,
-                            "sources": response_text.split("(Fontes: ")[-1].rstrip(")") if "(Fontes: " in response_text else "Nenhuma fonte disponível"
-                        })
+                            if "conversation_history" not in st.session_state:
+                                st.session_state.conversation_history = []
+                            st.session_state.conversation_history.append({
+                                "question": question,
+                                "response": response_text,
+                                "sources": response_text.split("(Fontes: ")[-1].rstrip(")") if "(Fontes: " in response_text else "Nenhuma fonte disponível"
+                            })
 
-                    except Exception as e:
-                        logger.error(f"Erro ao processar pergunta: {str(e)}")
-                        st.error(f"Erro durante processamento: {str(e)}")
-                    st.rerun()
+                        except Exception as e:
+                            logger.error(f"Erro ao processar pergunta: {str(e)}")
+                            st.error(f"Erro durante processamento: {str(e)}")
+                        st.rerun()
         
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -891,17 +1050,15 @@ def main():
     with st.container():
         st.markdown('<div class="content-container">', unsafe_allow_html=True)
 
-        # Exibir Fase e Alvo
+        # Status Bar
         st.markdown(f"""
-        <div style="margin-bottom: 15px;">
-            <p style="font-size: 12px; color: #8B949E;">
-                <strong style="color: #00CC00;">Fase Atual:</strong> {context.phase} | 
-                <strong style="color: #00CC00;">Alvo:</strong> {context.target or 'Não definido'}
-            </p>
+        <div class="status-bar">
+            <strong>Fase Atual:</strong> {context.phase} | 
+            <strong>Alvo:</strong> {context.target or 'Não definido'}
         </div>
         """, unsafe_allow_html=True)
 
-        # Exibir Histórico de Conversas (mais recente no topo)
+        # Histórico de Conversas (mais recente no topo)
         if "conversation_history" in st.session_state and st.session_state.conversation_history:
             history = list(reversed(st.session_state.conversation_history))
 
@@ -946,12 +1103,6 @@ def main():
                         """, unsafe_allow_html=True)
 
                     st.markdown('</div>', unsafe_allow_html=True)
-
-            st.markdown(f"""
-            <div class="suggestion">
-                <strong>Sugestão:</strong> {suggest_commands(context)}
-            </div>
-            """, unsafe_allow_html=True)
 
         else:
             st.markdown("""
