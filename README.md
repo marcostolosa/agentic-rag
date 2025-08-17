@@ -86,4 +86,3 @@ Streamlit com CSS customizado para experiência moderna
 3. Commit suas mudanças (`git commit -m 'Add feature'`)
 4. Push (`git push origin feature/AmazingFeature`)
 5. Abra um Pull Request
-
